@@ -31,6 +31,7 @@ def build_place_plan(
     *,
     bankroll: float,
     kelly_fraction: float,
+    allow_worse_odds: bool = False,
 ) -> PlacePlan:
     opp = decision.opportunity
     if decision.action != "take":
@@ -56,7 +57,9 @@ def build_place_plan(
             reason="no_exact_match",
         )
 
-    odds = check_odds(trading, opp, matched)
+    odds = check_odds(
+        trading, opp, matched, allow_worse_odds=allow_worse_odds
+    )
     if not odds.ok:
         return PlacePlan(
             opportunity=opp,
@@ -68,7 +71,8 @@ def build_place_plan(
             reason=odds.reason,
         )
 
-    price = odds.target_price  # limit at OCR'd +EV odds (snapped)
+    # Normal: OCR limit. allow_worse_odds: pay current ask so IOC can fill.
+    price = odds.target_price
     stake = decision.suggested_stake
     if stake <= 0:
         stake = kelly_stake(

@@ -50,6 +50,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="With --paper: after confirm, place IOC orders on Paper",
     )
+    parser.add_argument(
+        "--allow-odds-moved",
+        action="store_true",
+        help="With --paper: if ask is worse than OCR, still place at the current ask",
+    )
+    parser.add_argument(
+        "--place-one",
+        action="store_true",
+        help="With --place: only place the first ready plan",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="With --place: skip interactive confirm",
+    )
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
     args = parser.parse_args(argv)
 
@@ -106,10 +121,12 @@ def main(argv: list[str] | None = None) -> int:
             d,
             bankroll=settings.bankroll,
             kelly_fraction=settings.kelly_fraction,
+            allow_worse_odds=args.allow_odds_moved,
         )
         for d in decisions
     ]
     payload = []
+    placed = 0
     for plan in plans:
         row = {
             "action": plan.action,
@@ -129,17 +146,25 @@ def main(argv: list[str] | None = None) -> int:
             "order_body": plan.order_body,
             "place_result": None,
         }
-        if args.place and plan.action == "ready":
+        can_place = args.place and plan.action == "ready"
+        if can_place and args.place_one and placed >= 1:
+            row["place_result"] = {"skipped": "place_one_limit"}
+            payload.append(row)
+            continue
+        if can_place:
             summary = (
                 f"PLACE IOC {plan.opportunity.selection} @ {plan.price} "
                 f"qty={plan.qty} (OCR {plan.opportunity.odds_percent:.1f}% "
                 f"≈ {plan.opportunity.odds_american:+d}, "
-                f"ask≈{plan.odds.available_american if plan.odds else '?'})"
+                f"ask≈{plan.odds.available_american if plan.odds else '?'}, "
+                f"{plan.reason})"
             )
             print(summary, file=sys.stderr)
-            if _confirm("Confirm Paper IOC order?"):
+            confirmed = args.yes or _confirm("Confirm Paper IOC order?")
+            if confirmed:
                 result = place_ioc(client, plan)
                 row["place_result"] = result
+                placed += 1
                 if args.commit:
                     portfolio.mark_open(plan.opportunity.fingerprint())
             else:

@@ -45,11 +45,35 @@ def snap_price_down(p: Decimal) -> str:
     return f"{Decimal(snapped) / Decimal(1000):.3f}"
 
 
+def snap_price_up(p: Decimal) -> str:
+    """Snap probability up onto Novig's price grid (taker-willing limit)."""
+    from decimal import ROUND_UP
+
+    milli = int((p * Decimal(1000)).to_integral_value(rounding=ROUND_UP))
+    snapped = _snap_milli_up(milli)
+    if snapped is None:
+        raise ValueError(f"price out of range: {p}")
+    return f"{Decimal(snapped) / Decimal(1000):.3f}"
+
+
 def _snap_milli_down(milli: int) -> Optional[int]:
     if 1 <= milli <= 50 or 950 <= milli <= 999:
         return milli
     if 51 <= milli <= 949:
         return milli - (milli % 5)
+    return None
+
+
+def _snap_milli_up(milli: int) -> Optional[int]:
+    if milli < 1:
+        return 1
+    if milli > 999:
+        return None
+    if 1 <= milli <= 50 or 950 <= milli <= 999:
+        return milli
+    if 51 <= milli <= 949:
+        rem = milli % 5
+        return milli if rem == 0 else milli + (5 - rem)
     return None
 
 

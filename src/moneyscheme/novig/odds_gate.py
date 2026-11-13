@@ -30,6 +30,8 @@ def check_odds(
     client: NovigClient,
     opp: Opportunity,
     match: CatalogMatch,
+    *,
+    allow_worse_odds: bool = False,
 ) -> OddsCheck:
     target_price = opportunity_to_novig_price(
         odds_percent=opp.odds_percent or None,
@@ -92,6 +94,19 @@ def check_odds(
             ok=True,
             reason="odds_ok",
             target_price=target_price,
+            available_ask=ask_s,
+            available_american=avail_amer,
+            book=book,
+        )
+    if allow_worse_odds:
+        # Test / explicit override: pay the current ask so IOC can fill.
+        from moneyscheme.novig.money import snap_price_up
+
+        take_price = snap_price_up(ask)
+        return OddsCheck(
+            ok=True,
+            reason="odds_moved_accepted",
+            target_price=take_price,
             available_ask=ask_s,
             available_american=avail_amer,
             book=book,
