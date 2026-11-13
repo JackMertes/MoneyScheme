@@ -29,6 +29,14 @@ def test_event_key_order_invariant():
     assert a == b
 
 
+def test_event_key_includes_tip_for_rematch():
+    tonight = event_key("Bucks / Timberwolves", "6:10 PM In 4 hours")
+    next_week = event_key("Timberwolves / Bucks", "7:00 PM In 5 hours")
+    same_tip = event_key("Timberwolves / Bucks", "6:10 PM In 3 hours")
+    assert tonight != next_week
+    assert tonight == same_tip  # countdown changes; tip time is what matters
+
+
 def test_one_bet_per_game_keeps_best_ev(tmp_path: Path):
     settings = Settings(
         min_ev_percent=0.0,
@@ -62,6 +70,36 @@ def test_dedupe_same_fingerprint(tmp_path: Path):
     assert first[0].action == "take"
     assert second[0].action == "skip"
     assert second[0].reason == "already_taken"
+
+
+def test_placed_event_blocks_next_screenshot(tmp_path: Path):
+    """After a place is recorded, a later screenshot skips the same event."""
+    settings = Settings(
+        min_ev_percent=0.0,
+        one_bet_per_game=True,
+        bankroll=1000,
+        kelly_fraction=0.33,
+    )
+    db = tmp_path / "p.db"
+    portfolio = Portfolio(db)
+    placed = _opp(ev_percent=5.0, selection="Over 1.5", market="Assists (Allen, J)")
+    portfolio.record_open(
+        fingerprint=placed.fingerprint(),
+        event_key=event_key(placed.event, placed.status),
+        selection=placed.selection,
+        odds_american=placed.odds_american,
+    )
+    # Fresh Portfolio handle = next cycle / next screenshot
+    portfolio2 = Portfolio(db)
+    other_line = _opp(
+        ev_percent=8.0,
+        selection="Over 5.5",
+        market="Rebounds (Green, D)",
+        odds_american=150,
+    )
+    decisions = decide_many([other_line], portfolio2, settings, commit=False)
+    assert decisions[0].action == "skip"
+    assert decisions[0].reason == "same_event_already_active"
 
 
 def test_min_ev_skips_negative_file(tmp_path: Path):

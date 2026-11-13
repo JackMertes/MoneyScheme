@@ -104,6 +104,47 @@ class Portfolio:
                 ),
             )
 
+    def record_open(
+        self,
+        *,
+        fingerprint: str,
+        event_key: str,
+        selection: str,
+        odds_american: int,
+        opportunity_json: str = "",
+    ) -> None:
+        """Persist a placed bet so later screenshots skip this event/fingerprint."""
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT id FROM entries
+                WHERE fingerprint = ? AND status IN ('pending', 'open')
+                ORDER BY id DESC LIMIT 1
+                """,
+                (fingerprint,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE entries SET status = 'open' WHERE id = ?",
+                    (existing["id"],),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO entries
+                    (fingerprint, event_key, selection, odds_american, status, created_at, opportunity_json)
+                    VALUES (?, ?, ?, ?, 'open', ?, ?)
+                    """,
+                    (
+                        fingerprint,
+                        event_key,
+                        selection,
+                        odds_american,
+                        _utc_now(),
+                        opportunity_json,
+                    ),
+                )
+
     def mark_open(self, fingerprint: str) -> None:
         self._set_status(fingerprint, "open")
 

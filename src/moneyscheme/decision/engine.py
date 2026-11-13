@@ -9,8 +9,24 @@ from moneyscheme.decision.sizing import kelly_stake
 from moneyscheme.models import Decision, Opportunity
 
 
-def event_key(event: str) -> str:
-    """Normalize event so player order does not matter."""
+_TIP_RE = re.compile(r"(\d{1,2}:\d{2}\s*(?:AM|PM))", re.I)
+
+
+def _tip_token(status: str) -> str:
+    """Pull tip time from PTO STATUS (e.g. '6:10 PM In 4 hours' → '6:10 pm')."""
+    if not status:
+        return ""
+    m = _TIP_RE.search(status)
+    return m.group(1).casefold() if m else ""
+
+
+def event_key(event: str, status: str = "") -> str:
+    """
+    Normalize a game so team order does not matter.
+
+    Includes tip time from STATUS when present so a rematch next week
+    (same teams, different tip) is a different event.
+    """
     parts = [p.strip().lower() for p in event.split("/") if p.strip()]
     if len(parts) < 2:
         parts = [
@@ -19,8 +35,11 @@ def event_key(event: str) -> str:
             if p.strip()
         ]
     if not parts:
-        return event.strip().lower()
-    return " / ".join(sorted(parts))
+        base = event.strip().lower()
+    else:
+        base = " / ".join(sorted(parts))
+    tip = _tip_token(status)
+    return f"{base}|{tip}" if tip else base
 
 
 def decide(
@@ -33,7 +52,7 @@ def decide(
     """Decide take/skip for one opportunity against portfolio state."""
     settings = settings or get_settings()
     fp = opportunity.fingerprint()
-    ek = event_key(opportunity.event)
+    ek = event_key(opportunity.event, opportunity.status)
     suggested = kelly_stake(
         odds_american=opportunity.odds_american,
         ev_percent=opportunity.ev_percent,
@@ -132,7 +151,7 @@ def decide_many(
         # Temporarily shadow portfolio checks via a thin wrapper path:
         # reuse decide() only when not needing provisional; for batch we inline.
         fp = opp.fingerprint()
-        ek = event_key(opp.event)
+        ek = event_key(opp.event, opp.status)
         suggested = kelly_stake(
             odds_american=opp.odds_american,
             ev_percent=opp.ev_percent,

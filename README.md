@@ -65,16 +65,26 @@ moneyscheme --live --decide --paper --pretty
 moneyscheme --live --decide --paper --place --pretty
 ```
 
+**Unsupervised Paper soak** (leave PTO visible; Ctrl+C to stop)
+
+```powershell
+moneyscheme --live --decide --paper --place --allow-odds-moved --yes --interval 180 --pretty
+```
+
+Every successful place is written to `data/portfolio.db` (blocks that **event** on later cycles) and appended to `data/bet_log.jsonl` for review. `--allow-odds-moved` is needed on Paper because its book usually differs from PTO/live.
+
 Useful flags:
 
 | Flag | Meaning |
 | --- | --- |
-| `--delay 8` | Extra seconds before capture (default 5) |
+| `--delay 8` | Extra seconds before first capture (default 5) |
 | `--delay 0` | Capture immediately |
-| `--place-one` | Place only the first ready plan |
+| `--interval 180` | Re-run every N seconds (`--live` only) |
+| `--place-one` | Place only the first ready plan per cycle |
 | `--allow-odds-moved` | If Paper ask is worse than OCR, still place at the ask |
 | `--yes` | Skip confirm (with `--place`) |
-| `--commit` | Write takes into `data/portfolio.db` |
+| `--bet-log PATH` | Where to append placed bets (default `data/bet_log.jsonl`) |
+| `--commit` | Also write Decision *takes* to portfolio before place |
 | `--image PATH` | Use a saved screenshot instead of `--live` |
 
 Calibrate ROI (5s countdown):
@@ -113,4 +123,5 @@ Report shape:
 - Book always Novig
 - Exact catalog match only (event → market type → strike → player)
 - Odds gate: Paper ask must be same or better than OCR odds, unless `--allow-odds-moved`
-- Orders are **IOC** only, with confirm before place
+- Orders are **IOC** only, with confirm before place (or `--yes`)
+- Placed bets persist in `data/portfolio.db`; the same **event** (teams + tip time from STATUS) is skipped on later screenshots even if that row is gone. A rematch next week is a new event.
