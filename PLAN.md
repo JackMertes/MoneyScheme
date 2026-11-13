@@ -25,6 +25,12 @@ Screenshot → OCR → Opportunity → Decision → Novig match/place → fills 
 - **Correlation:** Start strict: one bet per game. Loosen later (e.g. allow spread + total) once the loop is trustworthy.
 - **Selection:** Min EV%, market allowlist, max open bets.
 
+## UI assumptions (locked)
+
+Table columns: LEAGUE, STATUS, EV, EVENT, ODDS, MAX, BOOK & SELECTION. No WAGER column; we compute Kelly ourselves and cap with MAX.
+
+Book is always Novig (filter is Novig-only). We hardcode `book = novig` and OCR the selection text from that column, not the logo.
+
 ## Stack
 
 - Local Python on Windows
@@ -32,8 +38,13 @@ Screenshot → OCR → Opportunity → Decision → Novig match/place → fills 
 - Screenshot OCR (not a camera)
 - Novig API for execution
 
+## Status
+
+- Stage 1 (Capture → Opportunity): in progress / working on fixture `pto-ev-final.png`
+- Next: tune live ROI, then Decision layer
+
 ## Need from you
 
-- Pick the Odds screenshots for OCR calibration
+- Set `CAPTURE_ROI_*` in `.env` for a tight table crop (optional but better OCR)
 - Novig Paper keys when we reach stage 3
 - Confirm: one bet per game for Decision v1?
