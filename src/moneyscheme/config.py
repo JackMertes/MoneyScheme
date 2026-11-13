@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     market_allowlist: str = ""
     portfolio_db: str = "data/portfolio.db"
 
+    # Novig Paper / live API (management key for account; trading key for orders)
+    novig_host: str = "https://api.paper.novig.com"
+    novig_key_id: str = ""
+    novig_pem_path: str = "secrets/novig-paper.pem"
+    novig_trading_key_id: str = ""
+    novig_trading_pem_path: str = "secrets/novig-trading.pem"
+
     # Absolute screen ROI for live capture (pixels). None = full primary monitor.
     roi_left: Optional[int] = Field(default=None, validation_alias="CAPTURE_ROI_LEFT")
     roi_top: Optional[int] = Field(default=None, validation_alias="CAPTURE_ROI_TOP")

@@ -57,3 +57,32 @@ moneyscheme --image fixtures\screenshots\pto-ev-final.png --decide --pretty
 Your fixture rows are negative EV, so with `MIN_EV_PERCENT=0` they should all **skip** (`ev_below_min`). Same-game rows also collapse under one-bet-per-game when EV is positive.
 
 Add `--commit` to write takes into `data/portfolio.db` (so the next run can dedupe).
+
+## Novig Paper credentials
+
+1. Put API key id in `.env` as `NOVIG_KEY_ID=...`
+2. Put private key PEM in `secrets/novig-paper.pem`
+3. Test:
+
+```powershell
+python -m moneyscheme.app.novig_echo
+```
+
+A successful echo means signing and Paper auth work.
+
+### Trading subaccount (for placing)
+
+```powershell
+python -m moneyscheme.app.novig_bootstrap
+```
+
+That creates `secrets/novig-trading.pem`, funds $100 Paper, and prints `NOVIG_TRADING_*` lines for `.env`.
+
+### Paper dry-run / place
+
+```powershell
+moneyscheme --image fixtures\screenshots\pto-ev-final.png --decide --paper --pretty
+moneyscheme --image fixtures\screenshots\pto-ev-final.png --decide --paper --place --pretty
+```
+
+`--place` asks for confirm on each ready IOC. No `--place` means plan only.

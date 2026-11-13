@@ -10,3 +10,5 @@ build/
 .ruff_cache/
 *.log
 data/
+secrets/
+*.pem

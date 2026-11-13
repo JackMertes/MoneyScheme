@@ -74,46 +74,74 @@ def _tokens_below_headers(
     return [t for t in tokens if t.cy > cutoff]
 
 
-def _cluster_rows(tokens: Sequence[OcrToken], y_tol: float = 18.0) -> List[List[OcrToken]]:
-    """Group tokens into horizontal rows by y center."""
+def _cluster_rows(tokens: Sequence[OcrToken], y_tol: float = 55.0) -> List[List[OcrToken]]:
+    """Group tokens into horizontal rows by y center.
+
+    Event cells are often two stacked names, so tolerance is wider than a single line.
+    """
     ordered = sorted(tokens, key=lambda t: (t.cy, t.cx))
     rows: List[List[OcrToken]] = []
     for tok in ordered:
         if not rows:
             rows.append([tok])
             continue
-        if abs(tok.cy - rows[-1][0].cy) <= y_tol:
+        # Compare against the running mean y of the current cluster
+        mean_y = sum(t.cy for t in rows[-1]) / len(rows[-1])
+        if abs(tok.cy - mean_y) <= y_tol:
             rows[-1].append(tok)
         else:
             rows.append([tok])
-    # Merge very close consecutive rows (player name on two lines, etc.)
-    return _merge_event_split_rows(rows, y_tol=28.0)
+    return _merge_event_split_rows(rows, y_tol=90.0)
+
+
+def _row_has_signed_odds(row: Sequence[OcrToken]) -> bool:
+    for t in row:
+        raw = t.text.replace("−", "-").replace(" ", "")
+        if ODDS_RE.match(raw) and (raw.startswith("+") or raw.startswith("-")):
+            return True
+    return False
+
+
+def _row_has_ev(row: Sequence[OcrToken]) -> bool:
+    return any("%" in t.text for t in row)
 
 
 def _merge_event_split_rows(
     rows: List[List[OcrToken]], y_tol: float
 ) -> List[List[OcrToken]]:
-    """Merge a short follow-up line (second player name) into the previous row."""
+    """Attach stacked event-name lines to the odds/EV anchor row."""
     if not rows:
         return rows
-    merged: List[List[OcrToken]] = [rows[0]]
-    for row in rows[1:]:
-        prev = merged[-1]
-        prev_y = sum(t.cy for t in prev) / len(prev)
-        row_y = sum(t.cy for t in row) / len(row)
-        prev_has_odds = any(ODDS_RE.match(t.text.replace("−", "-")) for t in prev)
-        row_has_odds = any(ODDS_RE.match(t.text.replace("−", "-")) for t in row)
-        # Second player line: close in y, no odds of its own, previous already has odds/ev.
-        if (
-            abs(row_y - prev_y) <= y_tol
-            and not row_has_odds
-            and prev_has_odds
-            and len(row) <= 3
-        ):
-            prev.extend(row)
-        else:
-            merged.append(row)
-    return merged
+
+    # First pass: merge name-only lines into nearby anchor rows (odds+ev)
+    anchors = []
+    for i, row in enumerate(rows):
+        if _row_has_signed_odds(row) and _row_has_ev(row):
+            anchors.append(i)
+
+    if not anchors:
+        return rows
+
+    used = set()
+    bundles: List[List[OcrToken]] = []
+    for ai in anchors:
+        anchor_y = sum(t.cy for t in rows[ai]) / len(rows[ai])
+        bundle = list(rows[ai])
+        used.add(ai)
+        for j, row in enumerate(rows):
+            if j in used:
+                continue
+            if _row_has_signed_odds(row) or _row_has_ev(row):
+                continue
+            row_y = sum(t.cy for t in row) / len(row)
+            if abs(row_y - anchor_y) <= y_tol and len(row) <= 4:
+                bundle.extend(row)
+                used.add(j)
+        bundles.append(bundle)
+
+    # Keep non-consumed rows in order (filters/chrome); parser will discard junk
+    leftovers = [rows[i] for i in range(len(rows)) if i not in used]
+    return bundles + leftovers
 
 
 def _parse_row(
@@ -285,36 +313,44 @@ def _extract_event(
     headers: dict[str, float],
     image_width: Optional[int],
 ) -> str:
-    """Collect player/team name tokens between EV and ODDS columns when possible."""
-    x_ev = headers.get("EV")
-    x_odds = headers.get("ODDS")
+    """Collect player/team name tokens in the EVENT column (between EV and ODDS)."""
+    x_left = headers.get("EV")
+    x_right = headers.get("ODDS")
+    x_event = headers.get("EVENT")
     league_like = {"TENNIS", "TENIS", "NBA", "NFL", "MLB", "NHL", "UNDER", "OVER"}
     name_tokens: List[OcrToken] = []
     for t in row:
+        if len(t.text.strip()) <= 1:
+            continue
         if _is_numeric_ish(t.text) or _norm(t.text) in league_like:
             continue
         if _is_selection_phrase(t.text):
             continue
-        if TIME_RE.match(t.text.strip()):
+        if _looks_like_status(t.text) or _norm(t.text).startswith("TENI"):
             continue
-        if re.search(r"\bIn\s+\d+\s+hour", t.text, re.I):
+        if not _looks_like_name(t.text):
             continue
-        if _norm(t.text).startswith("TENI"):
-            continue
-        if _looks_like_status(t.text):
-            continue
-        if x_ev is not None and x_odds is not None:
-            if x_ev < t.cx < x_odds:
+        # Prefer EVENT column band
+        if x_left is not None and x_right is not None:
+            if x_left < t.cx < x_right:
                 name_tokens.append(t)
-        elif _looks_like_name(t.text):
+                continue
+        if x_event is not None and abs(t.cx - x_event) < 250:
             name_tokens.append(t)
 
     if not name_tokens:
-        # Fallback: any name-like tokens
-        name_tokens = [t for t in row if _looks_like_name(t.text)]
+        # Fallback: name-like tokens that are not in the far-right BOOK column
+        x_book = headers.get("BOOK")
+        for t in row:
+            if not _looks_like_name(t.text) or len(t.text.strip()) <= 1:
+                continue
+            if _norm(t.text) in league_like or _norm(t.text).startswith("TENI"):
+                continue
+            if x_book is not None and t.cx >= x_book - 20:
+                continue
+            name_tokens.append(t)
 
     names = [t.text.strip() for t in sorted(name_tokens, key=lambda t: (t.cy, t.cx))]
-    # Deduplicate while preserving order
     seen = set()
     uniq = []
     for n in names:
