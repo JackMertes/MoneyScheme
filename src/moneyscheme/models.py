@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -22,7 +22,7 @@ class Opportunity(BaseModel):
     captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def fingerprint(self) -> str:
-        """Stable key for dedupe: event + selection + odds + line-ish selection text."""
+        """Stable key for dedupe: event + selection + odds."""
         return "|".join(
             [
                 self.event.strip().lower(),
@@ -30,3 +30,13 @@ class Opportunity(BaseModel):
                 str(self.odds_american),
             ]
         )
+
+
+class Decision(BaseModel):
+    """Result of looking at an Opportunity against portfolio rules."""
+
+    action: Literal["take", "skip"]
+    reason: str
+    opportunity: Opportunity
+    suggested_stake: float = 0.0
+    decided_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

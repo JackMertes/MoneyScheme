@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     kelly_fraction: float = 0.33
     bankroll: float = 1000.0
 
+    # Decision rules
+    min_ev_percent: float = 0.0
+    one_bet_per_game: bool = True
+    max_open_bets: int = 20
+    # Comma-separated substrings matched against selection (empty = allow all)
+    market_allowlist: str = ""
+    portfolio_db: str = "data/portfolio.db"
+
     # Absolute screen ROI for live capture (pixels). None = full primary monitor.
     roi_left: Optional[int] = Field(default=None, validation_alias="CAPTURE_ROI_LEFT")
     roi_top: Optional[int] = Field(default=None, validation_alias="CAPTURE_ROI_TOP")
@@ -35,6 +43,11 @@ class Settings(BaseSettings):
             "width": self.roi_width,
             "height": self.roi_height,
         }
+
+    def market_allowlist_set(self) -> set[str]:
+        if not self.market_allowlist.strip():
+            return set()
+        return {p.strip().lower() for p in self.market_allowlist.split(",") if p.strip()}
 
 
 def get_settings() -> Settings:

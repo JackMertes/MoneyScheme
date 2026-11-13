@@ -40,11 +40,11 @@ Book is always Novig (filter is Novig-only). We hardcode `book = novig` and OCR 
 
 ## Status
 
-- Stage 1 (Capture → Opportunity): in progress / working on fixture `pto-ev-final.png`
-- Next: tune live ROI, then Decision layer
+- Stage 1 (Capture → Opportunity): done on fixture `pto-ev-final.png`
+- Stage 2 (Decision): done (dedupe, one bet per game, min EV, Kelly sizing, portfolio DB)
+- Next: Novig Paper match/place for `take` only
 
 ## Need from you
 
 - Set `CAPTURE_ROI_*` in `.env` for a tight table crop (optional but better OCR)
 - Novig Paper keys when we reach stage 3
-- Confirm: one bet per game for Decision v1?

@@ -47,3 +47,13 @@ Without ROI vars, the full primary monitor is captured.
 ## Opportunity fields
 
 From your locked table (Novig-only): `league`, `status`, `ev_percent`, `event`, `odds_american`, `max_stake`, `selection`, `book=novig`.
+
+## Decision (take / skip)
+
+```powershell
+moneyscheme --image fixtures\screenshots\pto-ev-final.png --decide --pretty
+```
+
+Your fixture rows are negative EV, so with `MIN_EV_PERCENT=0` they should all **skip** (`ev_below_min`). Same-game rows also collapse under one-bet-per-game when EV is positive.
+
+Add `--commit` to write takes into `data/portfolio.db` (so the next run can dedupe).
