@@ -8,7 +8,7 @@ from moneyscheme.decision.sizing import kelly_stake
 from moneyscheme.models import Decision, Opportunity
 from moneyscheme.novig.catalog import CatalogMatch, match_opportunity
 from moneyscheme.novig.client import NovigClient
-from moneyscheme.novig.money import american_to_novig_price, stake_to_qty
+from moneyscheme.novig.money import stake_to_qty
 from moneyscheme.novig.odds_gate import OddsCheck, check_odds
 
 

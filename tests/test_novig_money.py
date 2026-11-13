@@ -17,6 +17,14 @@ def test_plus_odds_to_price():
     assert american_to_novig_price(102) == "0.495"
 
 
+def test_percent_odds_to_price():
+    from moneyscheme.novig.money import percent_to_novig_price
+
+    # 46.1% -> 0.461 -> snap down to 0.460
+    assert percent_to_novig_price(46.1) == "0.460"
+    assert percent_to_novig_price(50.0) == "0.500"
+
+
 def test_snap_grid():
     assert snap_price_down(Decimal("0.667")) == "0.665"
     assert snap_price_down(Decimal("0.495")) == "0.495"

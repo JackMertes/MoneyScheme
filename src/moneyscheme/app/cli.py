@@ -53,11 +53,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
     args = parser.parse_args(argv)
 
+    saved_shot: Path | None = None
     if args.image:
         opps = opportunities_from_path(args.image)
     elif args.live:
         wait_for_switch(args.delay)
-        opps = opportunities_from_screen()
+        opps, saved_shot = opportunities_from_screen()
+        print(f"# saved screenshot: {saved_shot}", file=sys.stderr)
     else:
         parser.error("Provide --image PATH or --live")
 
@@ -114,6 +116,8 @@ def main(argv: list[str] | None = None) -> int:
             "reason": plan.reason,
             "selection": plan.opportunity.selection,
             "event": plan.opportunity.event,
+            "market": plan.opportunity.market,
+            "odds_percent": plan.opportunity.odds_percent,
             "odds_american": plan.opportunity.odds_american,
             "price": plan.price,
             "qty": plan.qty,
@@ -128,7 +132,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.place and plan.action == "ready":
             summary = (
                 f"PLACE IOC {plan.opportunity.selection} @ {plan.price} "
-                f"qty={plan.qty} (OCR odds {plan.opportunity.odds_american:+d}, "
+                f"qty={plan.qty} (OCR {plan.opportunity.odds_percent:.1f}% "
+                f"≈ {plan.opportunity.odds_american:+d}, "
                 f"ask≈{plan.odds.available_american if plan.odds else '?'})"
             )
             print(summary, file=sys.stderr)

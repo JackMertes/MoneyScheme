@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Opportunity(BaseModel):
@@ -13,7 +14,11 @@ class Opportunity(BaseModel):
     status: str = ""
     ev_percent: float
     event: str
-    odds_american: int
+    market: str = ""
+    # Pick the Odds ODDS column is implied probability percent (e.g. 46.1).
+    odds_percent: float = 0.0
+    # American form kept for Kelly helper / display; derived when missing.
+    odds_american: int = 0
     max_stake: Optional[float] = None
     selection: str
     book: str = "novig"
@@ -21,13 +26,33 @@ class Opportunity(BaseModel):
     raw_text: str = ""
     captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    @model_validator(mode="after")
+    def _sync_odds_fields(self) -> "Opportunity":
+        from moneyscheme.novig.money import (
+            american_to_probability,
+            percent_to_american,
+        )
+
+        if self.odds_percent > 0 and self.odds_american == 0:
+            self.odds_american = percent_to_american(self.odds_percent)
+        elif self.odds_american != 0 and self.odds_percent == 0:
+            p = american_to_probability(self.odds_american)
+            self.odds_percent = float((p * Decimal(100)).quantize(Decimal("0.001")))
+        return self
+
     def fingerprint(self) -> str:
-        """Stable key for dedupe: event + selection + odds."""
+        """Stable key for dedupe: event + selection + odds percent."""
+        odds_key = (
+            f"{self.odds_percent:.3f}"
+            if self.odds_percent > 0
+            else str(self.odds_american)
+        )
         return "|".join(
             [
                 self.event.strip().lower(),
+                self.market.strip().lower(),
                 self.selection.strip().lower(),
-                str(self.odds_american),
+                odds_key,
             ]
         )
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 from PIL import Image
 
@@ -23,7 +24,26 @@ def opportunities_from_path(path: Union[str, Path]) -> List[Opportunity]:
     return opportunities_from_image(load_image(path))
 
 
-def opportunities_from_screen(settings: Optional[Settings] = None) -> List[Opportunity]:
+def capture_screen_image(
+    settings: Optional[Settings] = None,
+    *,
+    save_dir: Union[str, Path] = "fixtures/screenshots",
+) -> Tuple[Image.Image, Path]:
+    """Capture the configured ROI and always save a PNG copy."""
     settings = settings or get_settings()
     image = capture_region(settings.capture_region())
-    return opportunities_from_image(image)
+    out_dir = Path(save_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = out_dir / f"live-{ts}.png"
+    image.save(path)
+    return image, path
+
+
+def opportunities_from_screen(
+    settings: Optional[Settings] = None,
+    *,
+    save_dir: Union[str, Path] = "fixtures/screenshots",
+) -> Tuple[List[Opportunity], Path]:
+    image, path = capture_screen_image(settings, save_dir=save_dir)
+    return opportunities_from_image(image), path

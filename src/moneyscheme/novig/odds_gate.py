@@ -8,9 +8,10 @@ from moneyscheme.models import Opportunity
 from moneyscheme.novig.catalog import CatalogMatch
 from moneyscheme.novig.client import NovigClient
 from moneyscheme.novig.money import (
-    american_to_novig_price,
+    ask_as_good_as,
     ask_from_other_bid,
-    odds_as_good_as,
+    opportunity_to_novig_price,
+    percent_to_probability,
     probability_to_american,
 )
 
@@ -30,7 +31,15 @@ def check_odds(
     opp: Opportunity,
     match: CatalogMatch,
 ) -> OddsCheck:
-    target_price = american_to_novig_price(opp.odds_american)
+    target_price = opportunity_to_novig_price(
+        odds_percent=opp.odds_percent or None,
+        odds_american=opp.odds_american or None,
+    )
+    target_prob = (
+        percent_to_probability(opp.odds_percent)
+        if opp.odds_percent > 0
+        else None
+    )
     market_id = match.market_id
     book = client.request("GET", f"/v3/catalog/markets/{market_id}/book")
     orders = book.get("orders") or {}
@@ -72,7 +81,13 @@ def check_odds(
     ask = ask_from_other_bid(str(other_bid))
     ask_s = f"{ask:.3f}"
     avail_amer = probability_to_american(ask)
-    if odds_as_good_as(opp.odds_american, ask):
+    if target_prob is None:
+        from moneyscheme.novig.money import american_to_probability, odds_as_good_as
+
+        ok = odds_as_good_as(opp.odds_american, ask)
+    else:
+        ok = ask_as_good_as(target_prob, ask)
+    if ok:
         return OddsCheck(
             ok=True,
             reason="odds_ok",

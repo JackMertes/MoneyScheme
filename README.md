@@ -34,7 +34,7 @@ Save a calibration shot (5s countdown so you can switch to Pick the Odds):
 python -m moneyscheme.app.save_capture
 ```
 
-Parse live (same countdown):
+Parse live (same countdown). Every `--live` run also saves a PNG under `fixtures/screenshots/live-TIMESTAMP.png`:
 
 ```powershell
 moneyscheme --live --pretty
@@ -46,7 +46,7 @@ Without ROI vars, the full primary monitor is captured.
 
 ## Opportunity fields
 
-From your locked table (Novig-only): `league`, `status`, `ev_percent`, `event`, `odds_american`, `max_stake`, `selection`, `book=novig`.
+From your locked table (Novig-only): `league`, `status`, `ev_percent`, `event`, `market`, `odds_percent` (or American), `max_stake`, `selection`, `book=novig`.
 
 ## Decision (take / skip)
 

@@ -1,4 +1,11 @@
-from moneyscheme.novig.catalog import _event_matches, _name_exact, _parse_selection
+from moneyscheme.novig.catalog import (
+    _event_matches,
+    _name_exact,
+    _parse_prop_player,
+    _parse_selection,
+    _prop_player_matches,
+    _teams_in_event_description,
+)
 
 
 def test_parse_under():
@@ -28,3 +35,25 @@ def test_event_both_surnames():
         "Adrian Andreev / Michele Ribecai",
         "J. Forejtek @ M. Moeller",
     )
+
+
+def test_teams_in_event_description():
+    assert _teams_in_event_description(
+        "Warriors / Spurs",
+        "Golden State Warriors @ San Antonio Spurs",
+    )
+    assert _teams_in_event_description(
+        "Central Arkansas / Arkansas",
+        "Central Arkansas @ Arkansas",
+    )
+    assert not _teams_in_event_description(
+        "Central Arkansas / Arkansas",
+        "Arkansas Pine Bluff @ California Baptist",
+    )
+
+
+def test_prop_player_initial_disambiguates():
+    prop = _parse_prop_player("Rebounds (Green, D)")
+    assert prop == {"last": "green", "initial": "d"}
+    assert _prop_player_matches(prop, "Draymond Green 5.5 REBOUNDS")
+    assert not _prop_player_matches(prop, "Josh Green 5.5 REBOUNDS")

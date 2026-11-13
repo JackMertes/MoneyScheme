@@ -7,7 +7,17 @@ from moneyscheme.models import Opportunity
 from moneyscheme.ocr.engine import OcrToken
 
 # Header labels we expect in the locked UI (left → right).
-HEADER_LABELS = ("LEAGUE", "STATUS", "EV", "EVENT", "ODDS", "MAX", "BOOK", "SELECTION")
+HEADER_LABELS = (
+    "LEAGUE",
+    "STATUS",
+    "EV",
+    "EVENT",
+    "MARKET",
+    "ODDS",
+    "MAX",
+    "BOOK",
+    "SELECTION",
+)
 
 ODDS_RE = re.compile(r"^[+\-−]?\d{2,4}$")
 EV_RE = re.compile(r"^[+\-−]?\d+(?:\.\d+)?\s*%?$")
@@ -46,7 +56,7 @@ def _find_headers(tokens: Sequence[OcrToken]) -> dict[str, float]:
     found: dict[str, float] = {}
     for t in tokens:
         n = _norm(t.text)
-        if n in ("LEAGUE", "STATUS", "EV", "EVENT", "ODDS", "MAX"):
+        if n in ("LEAGUE", "STATUS", "EV", "EVENT", "MARKET", "ODDS", "MAX"):
             found[n] = t.cx
         elif "BOOK" in n and "SELECTION" in n:
             found["BOOK"] = t.cx
@@ -91,19 +101,35 @@ def _cluster_rows(tokens: Sequence[OcrToken], y_tol: float = 55.0) -> List[List[
             rows[-1].append(tok)
         else:
             rows.append([tok])
-    return _merge_event_split_rows(rows, y_tol=90.0)
+    return _merge_event_split_rows(rows, y_tol=120.0)
+
+
+def _parse_percent_token(text: str) -> Optional[float]:
+    m = re.search(r"([+\-−]?\d+(?:\.\d+)?)\s*%", text.replace("−", "-"))
+    if not m:
+        return None
+    return float(m.group(1))
 
 
 def _row_has_signed_odds(row: Sequence[OcrToken]) -> bool:
+    """True if row has American odds or an implied-probability ODDS percent."""
     for t in row:
         raw = t.text.replace("−", "-").replace(" ", "")
         if ODDS_RE.match(raw) and (raw.startswith("+") or raw.startswith("-")):
+            return True
+        pct = _parse_percent_token(t.text)
+        # Implied odds percents are typically in a wider band than tiny EV labels.
+        if pct is not None and 5.0 <= abs(pct) <= 95.0:
             return True
     return False
 
 
 def _row_has_ev(row: Sequence[OcrToken]) -> bool:
-    return any("%" in t.text for t in row)
+    for t in row:
+        pct = _parse_percent_token(t.text)
+        if pct is not None and abs(pct) < 20.0:
+            return True
+    return False
 
 
 def _merge_event_split_rows(
@@ -134,8 +160,10 @@ def _merge_event_split_rows(
             if _row_has_signed_odds(row) or _row_has_ev(row):
                 continue
             row_y = sum(t.cy for t in row) / len(row)
-            if abs(row_y - anchor_y) <= y_tol and len(row) <= 4:
-                bundle.extend(row)
+            # Ignore IDE/chrome overlay tokens when sizing a candidate fragment
+            useful = [t for t in row if not _looks_like_chrome(t.text)]
+            if abs(row_y - anchor_y) <= y_tol and 0 < len(useful) <= 6:
+                bundle.extend(useful)
                 used.add(j)
         bundles.append(bundle)
 
@@ -149,28 +177,34 @@ def _parse_row(
     headers: dict[str, float],
     image_width: Optional[int],
 ) -> Optional[Opportunity]:
-    texts = [t.text for t in row]
+    # Drop IDE/browser overlay tokens so they don't poison MARKET/EVENT or kill the row
+    clean = [t for t in row if not _looks_like_chrome(t.text)]
+    if not clean:
+        return None
+    texts = [t.text for t in clean]
     joined = " | ".join(texts)
 
-    odds = _extract_odds(row)
-    ev = _extract_ev(row)
-    max_stake = _extract_max(row)
-    if odds is None or ev is None:
+    odds_percent = _extract_odds_percent(clean, headers)
+    odds_american = None if odds_percent is not None else _extract_odds_american(clean)
+    ev = _extract_ev(clean, headers)
+    max_stake = _extract_max(clean)
+    if (odds_percent is None and odds_american is None) or ev is None:
         return None
 
-    # Skip chrome / filter junk rows
+    # Skip pure chrome / filter junk rows (after overlay strip)
     if _looks_like_chrome(joined):
         return None
 
-    league = _extract_league(row)
-    status = _extract_status(row)
-    event = _extract_event(row, headers, image_width)
-    selection = _extract_selection(row, headers, image_width, event)
+    league = _extract_league(clean)
+    status = _extract_status(clean)
+    market = _extract_market(clean, headers)
+    event = _extract_event(clean, headers, image_width)
+    selection = _extract_selection(clean, headers, image_width, event)
 
     if not event or not selection:
         return None
 
-    confs = [t.conf for t in row]
+    confs = [t.conf for t in clean]
     confidence = sum(confs) / len(confs) if confs else 0.0
 
     return Opportunity(
@@ -178,7 +212,9 @@ def _parse_row(
         status=status,
         ev_percent=ev,
         event=event,
-        odds_american=odds,
+        market=market,
+        odds_percent=odds_percent or 0.0,
+        odds_american=odds_american or 0,
         max_stake=max_stake,
         selection=selection,
         book="novig",
@@ -193,6 +229,16 @@ def _looks_like_chrome(text: str) -> bool:
         "EXPECTED VALUES",
         "FIND GAMES",
         "ALL FILTERS",
+        "APPROVAL REQUIRED",
+        "GET-CHILDITEM",
+        "SORT-OBJECT",
+        "SELECT-OBJECT",
+        "LASTWRITETIME",
+        "FIXTURES",
+        "SCREENSHOTS",
+        "ACCEPT",
+        "REJECT",
+        "CURSOR",
         "IMPORTANT STUFF",
         "KELLY",
         "FORMULA",
@@ -202,7 +248,35 @@ def _looks_like_chrome(text: str) -> bool:
     return any(j in u for j in junk)
 
 
-def _extract_odds(row: Sequence[OcrToken]) -> Optional[int]:
+def _extract_odds_percent(
+    row: Sequence[OcrToken], headers: dict[str, float]
+) -> Optional[float]:
+    """Read implied probability from ODDS column (e.g. 46.1%)."""
+    x_odds = headers.get("ODDS")
+    x_ev = headers.get("EV")
+    candidates: list[tuple[float, float]] = []
+    for t in row:
+        pct = _parse_percent_token(t.text)
+        if pct is None:
+            continue
+        # Odds percents are market prices, typically well above tiny EV labels.
+        if abs(pct) < 5.0 or abs(pct) > 95.0:
+            continue
+        score = 0.0
+        if x_odds is not None:
+            score -= abs(t.cx - x_odds)
+        if x_ev is not None:
+            # Prefer farther from EV header when both percents exist
+            score += abs(t.cx - x_ev) * 0.25
+        candidates.append((score, pct))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
+def _extract_odds_american(row: Sequence[OcrToken]) -> Optional[int]:
+    """Legacy American odds parser (+120 / -150)."""
     signed: list[tuple[float, int]] = []
     unsigned: list[tuple[float, int]] = []
     for t in row:
@@ -219,28 +293,41 @@ def _extract_odds(row: Sequence[OcrToken]) -> Optional[int]:
     pool = signed or unsigned
     if not pool:
         return None
-    # Prefer the odds token (usually mid-right), not a random large number
     pool.sort(key=lambda x: x[0])
     return pool[0][1] if len(pool) == 1 else pool[len(pool) // 2][1]
 
 
-def _extract_ev(row: Sequence[OcrToken]) -> Optional[float]:
+def _extract_ev(
+    row: Sequence[OcrToken], headers: Optional[dict[str, float]] = None
+) -> Optional[float]:
+    headers = headers or {}
+    x_ev = headers.get("EV")
+    x_odds = headers.get("ODDS")
+    scored: list[tuple[float, float]] = []
     for t in row:
-        raw = t.text.replace("−", "-").replace(" ", "")
-        if "%" in t.text:
-            m = re.search(r"([+\-]?\d+(?:\.\d+)?)\s*%", t.text.replace("−", "-"))
-            if m:
-                return float(m.group(1))
-        if EV_RE.match(raw) and raw.endswith("%"):
-            return float(raw.rstrip("%"))
-    # Sometimes OCR splits number and %
+        pct = _parse_percent_token(t.text)
+        if pct is None:
+            continue
+        # EV labels are usually small; still allow larger if clearly in EV column
+        score = 0.0
+        if x_ev is not None:
+            score -= abs(t.cx - x_ev)
+        if x_odds is not None:
+            score += abs(t.cx - x_odds) * 0.25
+        if abs(pct) <= 20.0:
+            score += 50.0
+        scored.append((score, pct))
+    if scored:
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored[0][1]
+
+    # Split number + % fallback
     for i, t in enumerate(row):
         raw = t.text.replace("−", "-")
         if re.fullmatch(r"[+\-]?\d+(?:\.\d+)?", raw):
             nxt = row[i + 1].text if i + 1 < len(row) else ""
             if nxt.strip() == "%":
                 val = float(raw)
-                # EV is usually small magnitude vs american odds
                 if abs(val) < 100:
                     return val
     return None
@@ -254,6 +341,11 @@ def _extract_max(row: Sequence[OcrToken]) -> Optional[float]:
     for t in row:
         raw = t.text.replace(",", "").replace(" ", "").replace("−", "-")
         if raw.startswith("+") or raw.startswith("-") or "%" in raw:
+            continue
+        # Support $1.5k style caps
+        km = re.fullmatch(r"[\$Ss]?(\d+(?:\.\d+)?)\s*[kK]", raw)
+        if km:
+            preferred.append(float(km.group(1)) * 1000.0)
             continue
         m = re.fullmatch(r"[\$Ss]?(\d+(?:\.\d+)?)", raw)
         if not m:
@@ -284,8 +376,12 @@ def _extract_league(row: Sequence[OcrToken]) -> str:
         # OCR often drops a letter: TENIS
         if n in {"TENNIS", "TENIS"} or "TENNIS" in n or n.startswith("TENI"):
             return "Tennis"
-        if n in {"NBA", "NFL", "MLB", "NHL", "NCAAB", "NCAAF", "SOCCER", "UFC", "MMA"}:
-            return n
+        if "NCAAB" in n:
+            return "NCAAB"
+        if "NCAAF" in n:
+            return "NCAAF"
+        if n in {"NBA", "NFL", "MLB", "NHL", "SOCCER", "UFC", "MMA", "WNBA"}:
+            return n.split()[0] if " " in n else n
     return ""
 
 
@@ -308,49 +404,164 @@ def _extract_status(row: Sequence[OcrToken]) -> str:
     return " ".join(parts)
 
 
+def _is_team_abbrev(text: str) -> bool:
+    t = text.strip()
+    return bool(re.fullmatch(r"[A-Za-z]{2,4}", t)) and t.upper() == t
+
+
+def _is_prop_player_tag(text: str) -> bool:
+    """PTO market player tags look like '(Green, D)' or 'Green, D'."""
+    t = text.strip().strip("()")
+    return bool(re.fullmatch(r"[A-Za-z.'\-]+\s*,\s*[A-Za-z]\.?", t))
+
+
+def _normalize_market_blob(text: str) -> str:
+    """Normalize OCR variants like 'Assists - Allen, J' → 'Assists (Allen, J)'."""
+    t = text.strip()
+    m = re.match(
+        r"^(Assists|Rebounds|Points|3PT|Threes)\s*[-–—:]\s*(.+)$",
+        t,
+        re.IGNORECASE,
+    )
+    if m and _is_prop_player_tag(m.group(2)):
+        return f"{m.group(1)} ({m.group(2).strip().strip('()')})"
+    m2 = re.match(
+        r"^(Assists|Rebounds|Points|3PT|Threes)\s*\((.+)\)$",
+        t,
+        re.IGNORECASE,
+    )
+    if m2 and _is_prop_player_tag(m2.group(2)):
+        return f"{m2.group(1)} ({m2.group(2).strip()})"
+    return t
+
+
+def _extract_market(row: Sequence[OcrToken], headers: dict[str, float]) -> str:
+    """Read MARKET column text (e.g. Total Points 1H, Rebounds (Green, D))."""
+    x_left = headers.get("MARKET")
+    x_right = headers.get("ODDS")
+    parts: list[tuple[float, float, str]] = []
+    for t in row:
+        text = t.text.strip()
+        if _is_numeric_ish(text) or _is_selection_phrase(text):
+            continue
+        if _looks_like_status(text) or _looks_like_chrome(text):
+            continue
+        if len(text) <= 1:
+            continue
+        # MARKET labels often sit slightly left of the header glyph
+        if x_left is not None and x_right is not None:
+            if not (x_left - 100 <= t.cx <= x_right - 20):
+                continue
+        elif x_left is not None and abs(t.cx - x_left) > 260:
+            continue
+        else:
+            continue
+        parts.append((t.cy, t.cx, _normalize_market_blob(text)))
+    if not parts:
+        return ""
+    parts.sort(key=lambda x: (x[0], x[1]))
+    # Prefer a single already-normalized "Assists (Allen, J)" blob if present
+    for _, _, blob in parts:
+        if re.match(
+            r"^(Assists|Rebounds|Points|3PT|Threes)\s*\(",
+            blob,
+            re.IGNORECASE,
+        ):
+            return blob
+    # Normalize player tag formatting: Rebounds + Green, D → Rebounds (Green, D)
+    texts = [p for _, _, p in parts]
+    if len(texts) >= 2 and _is_prop_player_tag(texts[-1]) and not texts[-1].startswith("("):
+        head = " ".join(texts[:-1])
+        if head:
+            return f"{head} ({texts[-1]})"
+        return f"({texts[-1]})"
+    # If we only captured a player tag, try to find the market kind token in-band
+    if len(texts) == 1 and _is_prop_player_tag(texts[0]):
+        kinds = []
+        for t in row:
+            n = _norm(t.text)
+            if n in {"REBOUNDS", "ASSISTS", "POINTS", "3PT", "THREES"} or n.startswith("TOTAL"):
+                if x_left is None or abs(t.cx - x_left) < 280:
+                    kinds.append(t.text.strip())
+        if kinds:
+            return f"{kinds[0]} ({texts[0]})"
+        return f"({texts[0]})"
+    return " ".join(texts)
+
+
 def _extract_event(
     row: Sequence[OcrToken],
     headers: dict[str, float],
     image_width: Optional[int],
 ) -> str:
-    """Collect player/team name tokens in the EVENT column (between EV and ODDS)."""
+    """Collect team/player names in the EVENT column (between EV and MARKET/ODDS)."""
     x_left = headers.get("EV")
-    x_right = headers.get("ODDS")
+    x_right = headers.get("MARKET") or headers.get("ODDS")
     x_event = headers.get("EVENT")
-    league_like = {"TENNIS", "TENIS", "NBA", "NFL", "MLB", "NHL", "UNDER", "OVER"}
+    league_like = {
+        "TENNIS",
+        "TENIS",
+        "NBA",
+        "NFL",
+        "MLB",
+        "NHL",
+        "UNDER",
+        "OVER",
+        "NCAAB",
+        "NCAAF",
+        "WNBA",
+    }
+    market_words = {
+        "TOTAL",
+        "POINTS",
+        "REBOUNDS",
+        "ASSISTS",
+        "SPREAD",
+        "MONEYLINE",
+        "3PT",
+        "THREES",
+        "1H",
+        "2H",
+    }
     name_tokens: List[OcrToken] = []
     for t in row:
-        if len(t.text.strip()) <= 1:
+        text = t.text.strip()
+        if len(text) <= 1:
             continue
-        if _is_numeric_ish(t.text) or _norm(t.text) in league_like:
+        n = _norm(text)
+        if _is_numeric_ish(text) or n in league_like or n.startswith("TENI"):
             continue
-        if _is_selection_phrase(t.text):
+        if n.startswith("NCAAB") or n.startswith("NCAAF"):
             continue
-        if _looks_like_status(t.text) or _norm(t.text).startswith("TENI"):
+        if _is_selection_phrase(text) or _looks_like_status(text):
             continue
-        if not _looks_like_name(t.text):
+        if _is_prop_player_tag(text):
             continue
-        # Prefer EVENT column band
-        if x_left is not None and x_right is not None:
-            if x_left < t.cx < x_right:
-                name_tokens.append(t)
+        if any(w in n.split() for w in market_words) and "(" not in text:
+            # bare market labels belong in MARKET, not EVENT
+            if n in market_words or n.startswith("TOTAL") or n.startswith("REBOUND") or n == "3PT":
                 continue
-        if x_event is not None and abs(t.cx - x_event) < 250:
+        if not _looks_like_name(text) and not _is_team_abbrev(text):
+            continue
+        in_band = False
+        # Stay left of MARKET column so prop labels don't leak into EVENT
+        right_limit = x_right - 60 if x_right is not None else None
+        if x_left is not None and right_limit is not None and x_left < t.cx < right_limit:
+            in_band = True
+        elif x_event is not None and abs(t.cx - x_event) < 220:
+            if right_limit is None or t.cx < right_limit:
+                in_band = True
+        if in_band:
             name_tokens.append(t)
 
-    if not name_tokens:
-        # Fallback: name-like tokens that are not in the far-right BOOK column
-        x_book = headers.get("BOOK")
-        for t in row:
-            if not _looks_like_name(t.text) or len(t.text.strip()) <= 1:
-                continue
-            if _norm(t.text) in league_like or _norm(t.text).startswith("TENI"):
-                continue
-            if x_book is not None and t.cx >= x_book - 20:
-                continue
-            name_tokens.append(t)
-
-    names = [t.text.strip() for t in sorted(name_tokens, key=lambda t: (t.cy, t.cx))]
+    # Prefer full names over abbreviations when both appear
+    full = [
+        t
+        for t in name_tokens
+        if not _is_team_abbrev(t.text) and len(t.text.strip()) >= 4
+    ]
+    use = full if len(full) >= 2 else name_tokens
+    names = [t.text.strip() for t in sorted(use, key=lambda t: (t.cy, t.cx))]
     seen = set()
     uniq = []
     for n in names:

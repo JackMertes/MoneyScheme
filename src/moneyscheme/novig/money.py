@@ -12,6 +12,22 @@ def american_to_probability(odds: int) -> Decimal:
     return Decimal(abs(odds)) / (Decimal(abs(odds)) + Decimal(100))
 
 
+def percent_to_probability(odds_percent: float) -> Decimal:
+    """Pick the Odds ODDS column is implied probability percent, e.g. 46.1 → 0.461."""
+    p = Decimal(str(odds_percent)) / Decimal(100)
+    if p <= 0 or p >= 1:
+        raise ValueError(f"odds_percent out of range: {odds_percent}")
+    return p
+
+
+def percent_to_novig_price(odds_percent: float) -> str:
+    return snap_price_down(percent_to_probability(odds_percent))
+
+
+def percent_to_american(odds_percent: float) -> int:
+    return probability_to_american(percent_to_probability(odds_percent))
+
+
 def probability_to_american(p: Decimal) -> int:
     if p <= 0 or p >= 1:
         raise ValueError("probability must be in (0,1)")
@@ -41,6 +57,14 @@ def american_to_novig_price(odds: int) -> str:
     return snap_price_down(american_to_probability(odds))
 
 
+def opportunity_to_novig_price(*, odds_percent: float | None = None, odds_american: int | None = None) -> str:
+    if odds_percent is not None and odds_percent > 0:
+        return percent_to_novig_price(odds_percent)
+    if odds_american is None or odds_american == 0:
+        raise ValueError("need odds_percent or odds_american")
+    return american_to_novig_price(odds_american)
+
+
 def stake_to_qty(stake_dollars: float, price: str) -> int:
     """
     cost = price * qty * $0.01
@@ -64,5 +88,9 @@ def ask_from_other_bid(other_bid_price: str) -> Decimal:
 def odds_as_good_as(target_american: int, available_ask: Decimal) -> bool:
     """True if available ask is same or better (lower probability cost) than target odds."""
     target = american_to_probability(target_american)
-    # Allow tiny grid/float slack of half a milli
-    return available_ask <= target + Decimal("0.0005")
+    return ask_as_good_as(target, available_ask)
+
+
+def ask_as_good_as(target_prob: Decimal, available_ask: Decimal) -> bool:
+    """True if ask <= target probability (same or better price to buy)."""
+    return available_ask <= target_prob + Decimal("0.0005")

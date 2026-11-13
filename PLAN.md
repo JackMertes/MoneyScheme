@@ -62,12 +62,12 @@ Decision(take)
 
 4. **Odds gate (locked)**
    - Before place, check Novig’s book for that outcome
-   - Only proceed if available price is **at least as good as** the Pick the Odds American odds we OCR’d (same or better for us)
+   - Only proceed if available price is **at least as good as** the OCR’d odds percent (same or better for us)
    - If the line moved worse: skip (`odds_moved`)
-   - Order limit price is set from the OCR’d odds (snapped to Novig’s grid), so IOC cannot pay a worse price than we intended
+   - Order limit price is set from the OCR’d percent (snapped to Novig’s grid), so IOC cannot pay a worse price than we intended
 
 5. **Order builder**
-   - American odds → probability price string on Novig grid
+   - Odds percent (e.g. 46.1%) → Novig probability price on grid
    - Stake dollars → integer contract `qty`
    - Cap qty from MAX / bankroll / Kelly
    - Time in force: **IOC only** (no GTC)
