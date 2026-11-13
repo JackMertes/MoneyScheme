@@ -15,6 +15,7 @@ HEADER_LABELS = (
     "MARKET",
     "ODDS",
     "MAX",
+    "WAGER",
     "BOOK",
     "SELECTION",
 )
@@ -56,7 +57,7 @@ def _find_headers(tokens: Sequence[OcrToken]) -> dict[str, float]:
     found: dict[str, float] = {}
     for t in tokens:
         n = _norm(t.text)
-        if n in ("LEAGUE", "STATUS", "EV", "EVENT", "MARKET", "ODDS", "MAX"):
+        if n in ("LEAGUE", "STATUS", "EV", "EVENT", "MARKET", "ODDS", "MAX", "WAGER"):
             found[n] = t.cx
         elif "BOOK" in n and "SELECTION" in n:
             found["BOOK"] = t.cx
@@ -64,6 +65,9 @@ def _find_headers(tokens: Sequence[OcrToken]) -> dict[str, float]:
             found["BOOK"] = t.cx
         elif n == "SELECTION":
             found["SELECTION"] = t.cx
+    # Infer WAGER between MAX and BOOK when the header glyph is missed
+    if "WAGER" not in found and "MAX" in found and "BOOK" in found:
+        found["WAGER"] = (found["MAX"] + found["BOOK"]) / 2.0
     return found
 
 
@@ -187,7 +191,8 @@ def _parse_row(
     odds_percent = _extract_odds_percent(clean, headers)
     odds_american = None if odds_percent is not None else _extract_odds_american(clean)
     ev = _extract_ev(clean, headers)
-    max_stake = _extract_max(clean)
+    max_stake = _extract_max(clean, headers)
+    wager = _extract_wager(clean, headers)
     if (odds_percent is None and odds_american is None) or ev is None:
         return None
 
@@ -196,7 +201,7 @@ def _parse_row(
         return None
 
     league = _extract_league(clean)
-    status = _extract_status(clean)
+    status = _extract_status(clean, headers)
     market = _extract_market(clean, headers)
     event = _extract_event(clean, headers, image_width)
     selection = _extract_selection(clean, headers, image_width, event)
@@ -216,6 +221,7 @@ def _parse_row(
         odds_percent=odds_percent or 0.0,
         odds_american=odds_american or 0,
         max_stake=max_stake,
+        wager=wager,
         selection=selection,
         book="novig",
         confidence=float(confidence),
@@ -333,41 +339,97 @@ def _extract_ev(
     return None
 
 
-def _extract_max(row: Sequence[OcrToken]) -> Optional[float]:
-    """Parse MAX stake. OCR often turns '$620' into 'S620' or '$801' into '3801'."""
-    # Prefer explicitly dollar-like tokens over bare digits (OCR splits "$801" → "$801","3").
-    preferred: list[float] = []
-    fallback: list[tuple[float, float]] = []
+def _parse_money_token(text: str) -> Optional[float]:
+    raw = text.replace(",", "").replace(" ", "").replace("−", "-")
+    if raw.startswith("+") or raw.startswith("-") or "%" in raw:
+        return None
+    km = re.fullmatch(r"[\$Ss]?(\d+(?:\.\d+)?)\s*[kK]", raw)
+    if km:
+        return float(km.group(1)) * 1000.0
+    m = re.fullmatch(r"[\$Ss]?(\d+(?:\.\d+)?)", raw)
+    if not m:
+        return None
+    digits = m.group(1)
+    val = float(digits)
+    dollarish = raw.startswith(("$", "S", "s"))
+    if not dollarish and digits.startswith("3") and len(digits) == 4:
+        val = float(digits[1:])
+        dollarish = True
+    if not dollarish and "." not in digits:
+        # Bare integers without $ are ambiguous; only keep with $ / S prefix
+        return None
+    if not (0.01 <= val <= 1_000_000):
+        return None
+    return val
+
+
+def _extract_money_in_band(
+    row: Sequence[OcrToken],
+    x_left: Optional[float],
+    x_right: Optional[float],
+) -> Optional[float]:
+    hits: list[tuple[float, float]] = []
     for t in row:
-        raw = t.text.replace(",", "").replace(" ", "").replace("−", "-")
-        if raw.startswith("+") or raw.startswith("-") or "%" in raw:
+        val = _parse_money_token(t.text)
+        if val is None:
             continue
-        # Support $1.5k style caps
-        km = re.fullmatch(r"[\$Ss]?(\d+(?:\.\d+)?)\s*[kK]", raw)
-        if km:
-            preferred.append(float(km.group(1)) * 1000.0)
+        if x_left is not None and t.cx < x_left - 40:
             continue
-        m = re.fullmatch(r"[\$Ss]?(\d+(?:\.\d+)?)", raw)
-        if not m:
+        if x_right is not None and t.cx > x_right - 20:
             continue
-        digits = m.group(1)
-        val = float(digits)
-        dollarish = raw.startswith(("$", "S", "s"))
-        if not dollarish and digits.startswith("3") and len(digits) == 4:
-            val = float(digits[1:])
-            dollarish = True
-        if not (1 <= val <= 1_000_000):
+        hits.append((t.cx, val))
+    if not hits:
+        return None
+    hits.sort(key=lambda x: x[0])
+    return hits[0][1]
+
+
+def _extract_max(
+    row: Sequence[OcrToken], headers: Optional[dict[str, float]] = None
+) -> Optional[float]:
+    """Parse MAX stake (not WAGER). Prefer the MAX column band."""
+    headers = headers or {}
+    x_max = headers.get("MAX")
+    x_right = headers.get("WAGER") or headers.get("BOOK") or headers.get("SELECTION")
+    if x_max is not None:
+        banded = _extract_money_in_band(row, x_max - 80, x_right)
+        if banded is not None:
+            return banded
+    # Fallback: first dollar token left of WAGER/BOOK
+    return _extract_money_in_band(
+        row,
+        headers.get("ODDS"),
+        headers.get("WAGER") or headers.get("BOOK"),
+    )
+
+
+def _extract_wager(
+    row: Sequence[OcrToken], headers: Optional[dict[str, float]] = None
+) -> Optional[float]:
+    """Parse PTO WAGER column (display only)."""
+    headers = headers or {}
+    x_left = headers.get("WAGER") or headers.get("MAX")
+    x_right = headers.get("BOOK") or headers.get("SELECTION")
+    if x_left is None:
+        return None
+    # When WAGER header was inferred, prefer the rightmost $ between MAX and BOOK
+    hits: list[tuple[float, float]] = []
+    for t in row:
+        val = _parse_money_token(t.text)
+        if val is None:
             continue
-        if dollarish:
-            preferred.append(val)
-        elif len(digits) >= 2:
-            fallback.append((t.cx, val))
-    if preferred:
-        return preferred[-1]
-    if fallback:
-        fallback.sort(key=lambda x: x[0])
-        return fallback[-1][1]
-    return None
+        if t.cx < x_left - 40:
+            continue
+        if x_right is not None and t.cx > x_right - 20:
+            continue
+        # Skip the MAX cell itself when scanning from MAX
+        if headers.get("MAX") is not None and abs(t.cx - headers["MAX"]) < 60:
+            continue
+        hits.append((t.cx, val))
+    if not hits:
+        return None
+    hits.sort(key=lambda x: x[0])
+    return hits[-1][1]
 
 
 def _extract_league(row: Sequence[OcrToken]) -> str:
@@ -396,12 +458,25 @@ def _looks_like_status(text: str) -> bool:
     return False
 
 
-def _extract_status(row: Sequence[OcrToken]) -> str:
-    parts = []
+def _extract_status(
+    row: Sequence[OcrToken],
+    headers: Optional[dict[str, float]] = None,
+) -> str:
+    headers = headers or {}
+    x_left = headers.get("STATUS") or headers.get("LEAGUE")
+    x_right = headers.get("EV") or headers.get("EVENT")
+    parts: list[tuple[float, str]] = []
     for t in row:
-        if _looks_like_status(t.text):
-            parts.append(t.text.strip())
-    return " ".join(parts)
+        if not _looks_like_status(t.text):
+            continue
+        if x_left is not None and t.cx < x_left - 80:
+            continue
+        if x_right is not None and t.cx > x_right - 20:
+            continue
+        parts.append((t.cy, t.text.strip()))
+    parts.sort(key=lambda x: x[0])
+    # Prefer "6:10 PM In 4 hours" order
+    return " ".join(p for _, p in parts)
 
 
 def _is_team_abbrev(text: str) -> bool:
@@ -409,10 +484,26 @@ def _is_team_abbrev(text: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z]{2,4}", t)) and t.upper() == t
 
 
+def _normalize_prop_initial(initial: str) -> str:
+    """OCR often reads initial O as 0."""
+    ch = initial.strip().rstrip(".")[:1]
+    if ch == "0":
+        return "O"
+    return ch.upper() if ch.isalpha() else ch
+
+
 def _is_prop_player_tag(text: str) -> bool:
-    """PTO market player tags look like '(Green, D)' or 'Green, D'."""
+    """PTO market player tags look like '(Green, D)' or 'Green, D' / 'Toppin, 0'."""
     t = text.strip().strip("()")
-    return bool(re.fullmatch(r"[A-Za-z.'\-]+\s*,\s*[A-Za-z]\.?", t))
+    return bool(re.fullmatch(r"[A-Za-z.'\-]+\s*,\s*[A-Za-z0]\.?", t))
+
+
+def _format_prop_player_tag(text: str) -> str:
+    t = text.strip().strip("()")
+    m = re.fullmatch(r"([A-Za-z.'\-]+)\s*,\s*([A-Za-z0])\.?", t)
+    if not m:
+        return t
+    return f"{m.group(1)}, {_normalize_prop_initial(m.group(2))}"
 
 
 def _normalize_market_blob(text: str) -> str:
@@ -424,14 +515,14 @@ def _normalize_market_blob(text: str) -> str:
         re.IGNORECASE,
     )
     if m and _is_prop_player_tag(m.group(2)):
-        return f"{m.group(1)} ({m.group(2).strip().strip('()')})"
+        return f"{m.group(1)} ({_format_prop_player_tag(m.group(2))})"
     m2 = re.match(
         r"^(Assists|Rebounds|Points|3PT|Threes)\s*\((.+)\)$",
         t,
         re.IGNORECASE,
     )
     if m2 and _is_prop_player_tag(m2.group(2)):
-        return f"{m2.group(1)} ({m2.group(2).strip()})"
+        return f"{m2.group(1)} ({_format_prop_player_tag(m2.group(2))})"
     return t
 
 
@@ -471,12 +562,14 @@ def _extract_market(row: Sequence[OcrToken], headers: dict[str, float]) -> str:
     # Normalize player tag formatting: Rebounds + Green, D → Rebounds (Green, D)
     texts = [p for _, _, p in parts]
     if len(texts) >= 2 and _is_prop_player_tag(texts[-1]) and not texts[-1].startswith("("):
+        tag = _format_prop_player_tag(texts[-1])
         head = " ".join(texts[:-1])
         if head:
-            return f"{head} ({texts[-1]})"
-        return f"({texts[-1]})"
+            return f"{head} ({tag})"
+        return f"({tag})"
     # If we only captured a player tag, try to find the market kind token in-band
     if len(texts) == 1 and _is_prop_player_tag(texts[0]):
+        tag = _format_prop_player_tag(texts[0])
         kinds = []
         for t in row:
             n = _norm(t.text)
@@ -484,8 +577,8 @@ def _extract_market(row: Sequence[OcrToken], headers: dict[str, float]) -> str:
                 if x_left is None or abs(t.cx - x_left) < 280:
                     kinds.append(t.text.strip())
         if kinds:
-            return f"{kinds[0]} ({texts[0]})"
-        return f"({texts[0]})"
+            return f"{kinds[0]} ({tag})"
+        return f"({tag})"
     return " ".join(texts)
 
 

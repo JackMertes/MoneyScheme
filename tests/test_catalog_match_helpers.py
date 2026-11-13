@@ -57,3 +57,9 @@ def test_prop_player_initial_disambiguates():
     assert prop == {"last": "green", "initial": "d"}
     assert _prop_player_matches(prop, "Draymond Green 5.5 REBOUNDS")
     assert not _prop_player_matches(prop, "Josh Green 5.5 REBOUNDS")
+
+
+def test_prop_player_ocr_zero_as_o():
+    prop = _parse_prop_player("3PT (Toppin, O)")
+    assert prop == {"last": "toppin", "initial": "o"}
+    assert _prop_player_matches(prop, "Obi Toppin 1.5 THREE_POINTERS_MADE")

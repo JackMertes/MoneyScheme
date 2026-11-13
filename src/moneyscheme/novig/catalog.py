@@ -140,10 +140,13 @@ def _teams_in_event_description(opp_event: str, event_description: str) -> bool:
 
 def _parse_prop_player(market_text: str) -> Optional[dict[str, str]]:
     """Parse 'Rebounds (Green, D)' → {last: green, initial: d}."""
-    m = re.search(r"\(([a-zA-Z.'\-]+)\s*,\s*([a-zA-Z])\.?\)", market_text or "")
+    m = re.search(r"\(([a-zA-Z.'\-]+)\s*,\s*([a-zA-Z0])\.?\)", market_text or "")
     if not m:
         return None
-    return {"last": _norm(m.group(1)), "initial": m.group(2).casefold()}
+    initial = m.group(2)
+    if initial == "0":
+        initial = "O"
+    return {"last": _norm(m.group(1)), "initial": initial.casefold()}
 
 
 def _prop_player_matches(prop: dict[str, str], market_description: str) -> bool:

@@ -8,9 +8,10 @@ from pathlib import Path
 from moneyscheme.app.countdown import wait_for_switch
 from moneyscheme.config import get_settings
 from moneyscheme.decision import Portfolio, decide_many
+from moneyscheme.models import Decision, Opportunity
 from moneyscheme.novig.bootstrap import trading_client
 from moneyscheme.novig.client import NovigClient
-from moneyscheme.novig.place import build_place_plan, place_ioc
+from moneyscheme.novig.place import PlacePlan, build_place_plan, place_ioc
 from moneyscheme.pipeline import opportunities_from_path, opportunities_from_screen
 
 
@@ -20,6 +21,53 @@ def _confirm(prompt: str) -> bool:
     except EOFError:
         return False
     return ans in {"y", "yes"}
+
+
+def _opp_report(o: Opportunity) -> dict:
+    """Compact opportunity view for stdout."""
+    row = {
+        "league": o.league,
+        "status": o.status,
+        "ev": o.ev_percent,
+        "event": o.event,
+        "market": o.market or None,
+        "selection": o.selection,
+        "odds": o.odds_price,
+        "max": o.max_stake,
+        "wager": o.wager,
+    }
+    return {k: v for k, v in row.items() if v is not None and v != ""}
+
+
+def _decision_report(d: Decision) -> dict:
+    row = _opp_report(d.opportunity)
+    row["action"] = d.action
+    row["reason"] = d.reason
+    if d.suggested_stake:
+        row["stake"] = d.suggested_stake
+    return row
+
+
+def _plan_report(plan: PlacePlan, place_result=None) -> dict:
+    o = plan.opportunity
+    row = {
+        "action": plan.action,
+        "reason": plan.reason,
+        "status": o.status or None,
+        "event": o.event,
+        "market": o.market or None,
+        "selection": o.selection,
+        "odds": o.odds_price,
+        "ask": plan.odds.available_ask if plan.odds else None,
+        "max": o.max_stake,
+        "wager": o.wager,
+        "outcomeId": plan.match.outcome_id if plan.match else None,
+    }
+    if plan.action == "ready" and plan.price and plan.price != o.odds_price:
+        row["limit"] = plan.price
+    if place_result is not None:
+        row["place_result"] = place_result
+    return {k: v for k, v in row.items() if v is not None and v != ""}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = get_settings()
 
     if not args.decide:
-        payload = [o.model_dump(mode="json") for o in opps]
+        payload = [_opp_report(o) for o in opps]
         print(f"# {len(opps)} opportunities", file=sys.stderr)
         print(json.dumps(payload, indent=2 if args.pretty else None))
         return 0
@@ -95,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if not args.paper:
-        payload = [d.model_dump(mode="json") for d in decisions]
+        payload = [_decision_report(d) for d in decisions]
         print(json.dumps(payload, indent=2 if args.pretty else None))
         return 0
 
@@ -128,48 +176,29 @@ def main(argv: list[str] | None = None) -> int:
     payload = []
     placed = 0
     for plan in plans:
-        row = {
-            "action": plan.action,
-            "reason": plan.reason,
-            "selection": plan.opportunity.selection,
-            "event": plan.opportunity.event,
-            "market": plan.opportunity.market,
-            "odds_percent": plan.opportunity.odds_percent,
-            "odds_american": plan.opportunity.odds_american,
-            "price": plan.price,
-            "qty": plan.qty,
-            "tif": plan.tif,
-            "outcomeId": plan.match.outcome_id if plan.match else None,
-            "marketId": plan.match.market_id if plan.match else None,
-            "available_ask": plan.odds.available_ask if plan.odds else None,
-            "available_american": plan.odds.available_american if plan.odds else None,
-            "order_body": plan.order_body,
-            "place_result": None,
-        }
+        place_result = None
         can_place = args.place and plan.action == "ready"
         if can_place and args.place_one and placed >= 1:
-            row["place_result"] = {"skipped": "place_one_limit"}
-            payload.append(row)
+            place_result = {"skipped": "place_one_limit"}
+            payload.append(_plan_report(plan, place_result))
             continue
         if can_place:
             summary = (
                 f"PLACE IOC {plan.opportunity.selection} @ {plan.price} "
-                f"qty={plan.qty} (OCR {plan.opportunity.odds_percent:.1f}% "
-                f"≈ {plan.opportunity.odds_american:+d}, "
-                f"ask≈{plan.odds.available_american if plan.odds else '?'}, "
+                f"qty={plan.qty} (odds {plan.opportunity.odds_price}, "
+                f"ask {plan.odds.available_ask if plan.odds else '?'}, "
                 f"{plan.reason})"
             )
             print(summary, file=sys.stderr)
             confirmed = args.yes or _confirm("Confirm Paper IOC order?")
             if confirmed:
-                result = place_ioc(client, plan)
-                row["place_result"] = result
+                place_result = place_ioc(client, plan)
                 placed += 1
                 if args.commit:
                     portfolio.mark_open(plan.opportunity.fingerprint())
             else:
-                row["place_result"] = {"skipped": "user_declined"}
-        payload.append(row)
+                place_result = {"skipped": "user_declined"}
+        payload.append(_plan_report(plan, place_result))
 
     ready = sum(1 for p in plans if p.action == "ready")
     print(f"# paper plans: {ready} ready, {len(plans) - ready} skip", file=sys.stderr)

@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     if region:
         print(f"ROI used: {region}")
     else:
-        print("ROI: full primary monitor (set CAPTURE_ROI_* in .env to crop)")
+        print("ROI: full primary monitor (set CAPTURE_USE_ROI=true in .env to crop)")
     return 0
 
 

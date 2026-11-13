@@ -17,14 +17,23 @@ class Opportunity(BaseModel):
     market: str = ""
     # Pick the Odds ODDS column is implied probability percent (e.g. 46.1).
     odds_percent: float = 0.0
-    # American form kept for Kelly helper / display; derived when missing.
+    # American form kept for Kelly helper; derived when missing.
     odds_american: int = 0
     max_stake: Optional[float] = None
+    # PTO WAGER column (Kelly suggestion). Display only; we size ourselves.
+    wager: Optional[float] = None
     selection: str
     book: str = "novig"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     raw_text: str = ""
     captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def odds_price(self) -> Optional[str]:
+        """OCR odds as Novig-style probability, e.g. '0.470'."""
+        if self.odds_percent <= 0:
+            return None
+        return f"{self.odds_percent / 100.0:.3f}"
 
     @model_validator(mode="after")
     def _sync_odds_fields(self) -> "Opportunity":
